@@ -1,0 +1,158 @@
+/* src/datepicker-dark.css */
+/* VERSÃO ATUALIZADA (Light/Dark Mode - Corrigido) */
+
+/* --- O Bloco de código .react-datepicker-wrapper .input-style FOI REMOVIDO --- */
+/* O input já recebe a classe .input-style globalmente. */
+
+
+/* --- Container Principal (Padrão: Claro) --- */
+.react-datepicker {
+  @apply bg-white border-gray-400 text-gray-800 rounded-lg shadow-lg border;
+  font-family: inherit;
+}
+/* --- Escuro --- */
+html.dark .react-datepicker {
+  @apply bg-gray-800 border-gray-700 text-gray-200;
+}
+
+/* --- Cor do "Triângulo" (Arrow) --- */
+.react-datepicker__header {
+  @apply bg-gray-100 border-b-gray-200;
+}
+html.dark .react-datepicker__header {
+  @apply bg-gray-900 border-b-gray-700;
+}
+.react-datepicker__triangle::before,
+.react-datepicker__triangle::after {
+  display: none !important; /* Remove o triângulo padrão */
+}
+
+/* --- Cabeçalho (Mês e Navegação) --- */
+.react-datepicker__current-month,
+.react-datepicker-time__header {
+  @apply text-gray-800 font-semibold;
+}
+html.dark .react-datepicker__current-month,
+html.dark .react-datepicker-time__header {
+  @apply text-gray-200;
+}
+
+.react-datepicker__day-name {
+   @apply text-cyan-600 text-xs; /* Cor dias semana (Claro) */
+}
+html.dark .react-datepicker__day-name {
+   @apply text-cyan-400; /* Cor dias semana (Escuro) */
+}
+
+/* Botões de Navegação (Setas < >) */
+.react-datepicker__navigation-icon::before {
+  @apply border-gray-500; /* Cor da seta (Claro) */
+  border-width: 2px 2px 0 0;
+}
+.react-datepicker__navigation:hover .react-datepicker__navigation-icon::before {
+  @apply border-gray-800; /* Cor da seta no hover (Claro) */
+}
+html.dark .react-datepicker__navigation-icon::before {
+  @apply border-gray-400; /* Cor da seta (Escuro) */
+}
+html.dark .react-datepicker__navigation:hover .react-datepicker__navigation-icon::before {
+  @apply border-gray-400; /* Cor da seta no hover (Escuro) */
+}
+
+/* --- Dias do Calendário --- */
+.react-datepicker__day {
+  @apply text-gray-700;
+}
+html.dark .react-datepicker__day {
+  @apply text-gray-300;
+}
+
+/* Hover nos dias */
+.react-datepicker__day:hover,
+.react-datepicker__month-text:hover,
+.react-datepicker__quarter-text:hover,
+.react-datepicker__year-text:hover {
+  @apply bg-gray-100 rounded-full;
+}
+html.dark .react-datepicker__day:hover,
+html.dark .react-datepicker__month-text:hover,
+html.dark .react-datepicker__quarter-text:hover,
+html.dark .react-datepicker__year-text:hover {
+  @apply bg-gray-700;
+}
+
+/* Dia selecionado (ou início/fim do intervalo) */
+.react-datepicker__day--selected,
+.react-datepicker__day--in-range,
+.react-datepicker__day--in-selecting-range {
+  @apply bg-cyan-600 text-white font-bold rounded-full;
+}
+.react-datepicker__day--selected:hover,
+.react-datepicker__day--in-range:hover,
+.react-datepicker__day--in-selecting-range:hover {
+  @apply bg-cyan-500;
+}
+/* (Escuro não precisa de override, ciano funciona bem em ambos) */
+
+/* Dia no intervalo (entre início e fim) */
+.react-datepicker__day--in-range,
+.react-datepicker__day--in-selecting-range {
+  @apply bg-cyan-600/20 text-cyan-700 rounded-none;
+}
+html.dark .react-datepicker__day--in-range,
+html.dark .react-datepicker__day--in-selecting-range {
+  @apply bg-cyan-700/50 text-cyan-200;
+}
+
+/* Fim de semana (opcional) */
+.react-datepicker__day--weekend {
+  @apply text-gray-500;
+}
+html.dark .react-datepicker__day--weekend {
+  @apply text-gray-400;
+}
+
+/* Outros meses (dias "cinzas") */
+.react-datepicker__day--outside-month {
+  @apply text-gray-300;
+}
+html.dark .react-datepicker__day--outside-month {
+  @apply text-gray-600;
+}
+
+/* Dia desabilitado */
+.react-datepicker__day--disabled {
+  @apply text-gray-200;
+}
+html.dark .react-datepicker__day--disabled {
+  @apply text-gray-700;
+}
+
+/* Botão "Limpar" (X) dentro do input */
+.react-datepicker__close-icon {
+  @apply pr-3;
+}
+.react-datepicker__close-icon::after {
+  @apply bg-gray-200 text-gray-600 h-5 w-5 pt-0.5;
+  content: 'x';
+  border-radius: 50%;
+  font-weight: bold;
+}
+html.dark .react-datepicker__close-icon::after {
+  @apply bg-gray-700 text-gray-300;
+}
+/* Garante que o wrapper invisível do DatePicker ocupe 100% do espaço do Grid */
+.react-datepicker-wrapper {
+  display: block !important;
+  width: 100% !important;
+}
+
+/* Trava o input interno para nunca encolher */
+.react-datepicker-wrapper input {
+  width: 100% !important;
+}
+
+/* Joga o calendário flutuante por cima de todos os gráficos e cards da tela */
+.react-datepicker-popper {
+  z-index: 9999 !important;
+}
