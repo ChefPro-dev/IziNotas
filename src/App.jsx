@@ -60,10 +60,17 @@ export default function App() {
       setActiveSection('dashboard');
 
       try {
-        const uData = await getUser(user.uid);
+        // Retry até 5x com 1s de intervalo — evita race condition durante cadastro
+        // onde onAuthStateChanged dispara antes do createUser terminar de escrever
+        let uData = null;
+        for (let i = 0; i < 5; i++) {
+          uData = await getUser(user.uid);
+          if (uData) break;
+          await new Promise(r => setTimeout(r, 1000));
+        }
 
         if (!uData || !uData.org_id) {
-          // Account incomplete — sign out and return to login
+          // Após 5 tentativas ainda sem doc — conta incompleta, faz logout
           await signOut(auth);
           return;
         }
