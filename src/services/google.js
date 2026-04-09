@@ -337,10 +337,11 @@ export const editarProcessamento = async (accessToken, spreadsheetId, row, dados
   const sheetRow1Based = row._sheetRowIndex + 1; // +1 porque índice inclui header
   const range = encodeURIComponent(`${row._sheetName}!A${sheetRow1Based}:I${sheetRow1Based}`);
   const updatedRow = row.slice(0, 9).map((v, i) => v ?? '');
-  if (dados.fornecedor  !== undefined) updatedRow[4] = dados.fornecedor;
-  if (dados.valor_total !== undefined) updatedRow[5] = dados.valor_total;
-  if (dados.status      !== undefined) updatedRow[6] = dados.status;
+  if (dados.fornecedor     !== undefined) updatedRow[4] = dados.fornecedor;
+  if (dados.valor_total    !== undefined) updatedRow[5] = dados.valor_total;
+  if (dados.status         !== undefined) updatedRow[6] = dados.status;
   if (dados.descricao_erro !== undefined) updatedRow[7] = dados.descricao_erro;
+  if (dados.categorias     !== undefined) updatedRow[8] = dados.categorias;
   await gFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
     { method: 'PUT', body: JSON.stringify({ values: [updatedRow] }) },

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from './firebase';
 import {
@@ -185,7 +185,10 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
 
   const [procEditando, setProcEditando] = useState(null);
   const [procDeletando, setProcDeletando] = useState(null);
-  const [formProcEdit, setFormProcEdit] = useState({ fornecedor: '', valor_total: '', status: 'processada', descricao_erro: '' });
+  const [formProcEdit, setFormProcEdit] = useState({ fornecedor: '', valor_total: '', status: 'processada', descricao_erro: '', categorias: '' });
+  const [obsModalTexto, setObsModalTexto] = useState(null);
+  const [pollingAtivo, setPollingAtivo] = useState(false);
+  const pollingRef = useRef(null);
 
   const [membros, setMembros] = useState([]);
   const [loadingEquipe, setLoadingEquipe] = useState(false);
@@ -345,16 +348,109 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
     setProcessando('');
   };
 
+  const abrirArquivoProcessamento = async (row, clienteDoRow) => {
+    const [data, , , , , , status] = row;
+    const folderProcessadas = clienteDoRow?.folder_processadas;
+    const folderErro = clienteDoRow?.folder_erro;
+
+    if (status !== 'processada' || !folderProcessadas) {
+      const fallback = status !== 'processada' ? folderErro : folderProcessadas;
+      if (fallback) window.open(`https://drive.google.com/drive/folders/${fallback}`, '_blank');
+      return;
+    }
+
+    // data está no formato YYYY-MM-DD
+    const [ano, mes] = data.split('-');
+    const meses = { '01':'Janeiro','02':'Fevereiro','03':'Março','04':'Abril','05':'Maio','06':'Junho','07':'Julho','08':'Agosto','09':'Setembro','10':'Outubro','11':'Novembro','12':'Dezembro' };
+    const nomePastaMes = `${mes} - ${meses[mes]}`;
+
+    const listarFilhos = async (token, parentId, soPastas) => {
+      const mimeFilter = soPastas ? `mimeType='application/vnd.google-apps.folder' and ` : '';
+      const q = encodeURIComponent(`${mimeFilter}'${parentId}' in parents and trashed=false`);
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`;
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json();
+      return j.files || [];
+    };
+
+    // Verifica se uma pasta de mês corresponde ao mês esperado
+    // Aceita tanto "04 - Abril" quanto "4 - Abril"
+    const matchMes = (nomePasta, mesNum) => {
+      const semZero = String(parseInt(mesNum, 10));
+      const comZero = mesNum.padStart(2, '0');
+      return nomePasta.startsWith(`${comZero} -`) || nomePasta.startsWith(`${semZero} -`);
+    };
+
+    try {
+      const accessToken = await getAccessToken(orgData.id);
+
+      // 1. Lista subpastas de folder_processadas e filtra pelo ano
+      const subpastasRaiz = await listarFilhos(accessToken, folderProcessadas, true);
+      const pastaAno = subpastasRaiz.find(f => f.name === ano);
+      if (!pastaAno) {
+        window.open(`https://drive.google.com/drive/folders/${folderProcessadas}`, '_blank');
+        return;
+      }
+
+      // 2. Lista subpastas do ano e filtra pelo mês
+      const subpastasAno = await listarFilhos(accessToken, pastaAno.id, true);
+      const pastaMes = subpastasAno.find(f => matchMes(f.name, mes));
+      if (!pastaMes) {
+        window.open(pastaAno.webViewLink || `https://drive.google.com/drive/folders/${pastaAno.id}`, '_blank');
+        return;
+      }
+
+      // 3. Lista arquivos do mês e filtra pelo prefixo da data
+      const arquivosMes = await listarFilhos(accessToken, pastaMes.id, false);
+      const arquivo = arquivosMes.find(f => f.name.startsWith(data));
+      if (arquivo) {
+        window.open(arquivo.webViewLink, '_blank');
+      } else {
+        window.open(pastaMes.webViewLink || `https://drive.google.com/drive/folders/${pastaMes.id}`, '_blank');
+      }
+    } catch (err) {
+      console.error('[Drive] Erro ao abrir arquivo:', err);
+      window.open(`https://drive.google.com/drive/folders/${folderProcessadas}`, '_blank');
+    }
+  };
+
   const handleProcessar = async () => {
     setProcessando('processar');
     try {
       await processarArquivos(orgData);
-      toast.success('Processamento iniciado! Buscando arquivos nas pastas dos clientes.');
+      toast.success('Processamento iniciado! A lista será atualizada automaticamente.');
+      setPollingAtivo(true);
+      let semMudanca = 0;
+      let totalAnterior = -1;
+      pollingRef.current = setInterval(async () => {
+        await carregarLista();
+        // listaProcessamentos ainda não reflete o novo valor aqui,
+        // então usamos uma ref auxiliar via setter funcional
+        setListaProcessamentos(lista => {
+          const totalAtual = lista.length;
+          if (totalAtual === totalAnterior) {
+            semMudanca++;
+          } else {
+            semMudanca = 0;
+            totalAnterior = totalAtual;
+          }
+          // Para após 3 polls consecutivos sem mudança (~30s estável)
+          if (semMudanca >= 3) {
+            clearInterval(pollingRef.current);
+            setPollingAtivo(false);
+          }
+          return lista;
+        });
+      }, 10000);
     } catch (err) {
       toast.error('Erro ao processar: ' + err.message);
     }
     setProcessando('');
   };
+
+  useEffect(() => {
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+  }, []);
 
   const handleDeletarCliente = async () => {
     if (!clienteDeletando) return;
@@ -391,7 +487,11 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
       const novoId = dados.telegram_group_id?.trim() || '';
       const antigoId = _originalTelegramId?.trim() || '';
 
-      if (antigoId && antigoId !== novoId) await deleteTelegramGroup(antigoId);
+      // Só deleta do Firestore se nenhum outro cliente ainda usa o mesmo chat ID
+      if (antigoId && antigoId !== novoId) {
+        const outrosUsam = clientes.some(c => c.cliente_id !== dados.cliente_id && c.telegram_group_id?.trim() === antigoId);
+        if (!outrosUsam) await deleteTelegramGroup(antigoId);
+      }
       if (novoId) await registerTelegramGroup(novoId, orgData.id, dados, orgData.spreadsheet_id || '');
 
       toast.success(`Cliente "${dados.nome}" atualizado!`);
@@ -1056,6 +1156,17 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
     return acc;
   }, { processadas: 0, erros: 0, valor: 0 });
 
+  const COL_WIDTHS_PROC = {
+    data:       '8%',
+    hora:       '6%',
+    cliente:    '14%',
+    fornecedor: '17%',
+    valor:      '9%',
+    status:     '10%',
+    observacao: '26%',
+    acoes:      '10%',
+  };
+
   const renderProcessamentos = () => (
     <div className="flex flex-col gap-6">
       {/* Header */}
@@ -1065,16 +1176,27 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{listaFiltrada.length} registros encontrados</p>
         </div>
         {driveOk && (
-          <button
-            onClick={handleProcessar}
-            disabled={processando === 'processar'}
-            className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-orange-500/20 dark:shadow-cyan-600/20 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-60 disabled:transform-none cursor-pointer"
-          >
-            {processando === 'processar'
-              ? <><Loader size={15} className="animate-spin" /> Processando...</>
-              : <><RefreshCw size={15} /> Processar Notas</>
-            }
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { carregarLista(); if (pollingAtivo) { clearInterval(pollingRef.current); setPollingAtivo(false); } }}
+              disabled={loadingLista}
+              className="flex items-center gap-2 bg-gray-500 hover:bg-gray-600 dark:bg-gray-600 dark:hover:bg-gray-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-gray-500/20 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-60 disabled:transform-none cursor-pointer"
+              title={pollingAtivo ? 'Atualizando automaticamente a cada 10s — clique para parar' : 'Atualizar lista'}
+            >
+              <RefreshCw size={15} className={(loadingLista || pollingAtivo) ? 'animate-spin' : ''} />
+              {pollingAtivo ? 'Atualizando...' : 'Atualizar'}
+            </button>
+            <button
+              onClick={handleProcessar}
+              disabled={processando === 'processar'}
+              className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white text-sm font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-orange-500/20 dark:shadow-cyan-600/20 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-60 disabled:transform-none cursor-pointer"
+            >
+              {processando === 'processar'
+                ? <><Loader size={15} className="animate-spin" /> Processando...</>
+                : <><RefreshCw size={15} /> Processar Notas</>
+              }
+            </button>
+          </div>
         )}
       </div>
 
@@ -1178,21 +1300,21 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
             <table className="w-full min-w-[820px] text-sm text-gray-700 dark:text-gray-300">
               <thead className="bg-gray-200 dark:bg-gray-900/50 text-xs text-orange-500 dark:text-cyan-300 uppercase tracking-wider border-b border-orange-400 dark:border-gray-800">
                 <tr>
-                  <th className="py-3 px-4 text-center">Data</th>
-                  <th className="py-3 px-4 text-center">Hora</th>
-                  <th className="py-3 px-4 text-left">Cliente</th>
-                  <th className="py-3 px-4 text-left">Fornecedor</th>
-                  <th className="py-3 px-4 text-right">Valor (R$)</th>
-                  <th className="py-3 px-4 text-center">Status</th>
-                  <th className="py-3 px-4 text-left">Observação</th>
-                  <th className="py-3 px-4 text-center">Ações</th>
+                  <th className="py-3 px-4 text-center" style={{ width: COL_WIDTHS_PROC.data }}>Data</th>
+                  <th className="py-3 px-4 text-center" style={{ width: COL_WIDTHS_PROC.hora }}>Hora</th>
+                  <th className="py-3 px-4 text-left" style={{ width: COL_WIDTHS_PROC.cliente }}>Cliente</th>
+                  <th className="py-3 px-4 text-left" style={{ width: COL_WIDTHS_PROC.fornecedor }}>Fornecedor</th>
+                  <th className="py-3 px-4 text-right" style={{ width: COL_WIDTHS_PROC.valor }}>Valor (R$)</th>
+                  <th className="py-3 px-4 text-center" style={{ width: COL_WIDTHS_PROC.status }}>Status</th>
+                  <th className="py-3 px-4 text-left" style={{ width: COL_WIDTHS_PROC.observacao }}>Observação</th>
+                  <th className="py-3 px-4 text-center" style={{ width: COL_WIDTHS_PROC.acoes }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
                 {listaFiltrada.slice(0, paginaProc * 30).map((row, i) => {
                   const [data, hora, clienteId, nomeCliente, fornecedor, valorStr, status, descErro, catsJson] = row;
                   const clienteDoRow = clientes.find(c => c.cliente_id === clienteId);
-                  const valor = parseFloat(valorStr) || 0;
+                  const valor = parseFloat(String(valorStr).replace(',', '.')) || 0;
                   const ok = status === 'processada';
                   let catsResumo = '—';
                   try {
@@ -1203,17 +1325,29 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
                   const dataFormatada = data ? data.split('-').reverse().join('/') : '—';
                   return (
                     <tr key={i} className="border-b border-orange-300 dark:border-gray-700/50 hover:bg-orange-100 dark:hover:bg-gray-800/60 transition-colors">
-                      <td className="py-3 px-4 text-center font-mono text-xs">{dataFormatada}</td>
-                      <td className="py-3 px-4 text-center font-mono text-xs">{hora || '—'}</td>
-                      <td className="py-3 px-4 text-left font-semibold text-black dark:text-white">{nomeCliente || '—'}</td>
-                      <td className="py-3 px-4 text-left text-gray-600 dark:text-gray-400">{fornecedor || '—'}</td>
-                      <td className="py-3 px-4 text-right font-bold">{valor > 0 ? valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}</td>
-                      <td className="py-3 px-4 text-center">
+                      <td className="py-3 px-4 text-center font-mono text-xs" style={{ width: COL_WIDTHS_PROC.data }}>{dataFormatada}</td>
+                      <td className="py-3 px-4 text-center font-mono text-xs" style={{ width: COL_WIDTHS_PROC.hora }}>{hora || '—'}</td>
+                      <td className="py-3 px-4 text-left font-semibold text-black dark:text-white" style={{ width: COL_WIDTHS_PROC.cliente }}>{nomeCliente || '—'}</td>
+                      <td className="py-3 px-4 text-left text-gray-600 dark:text-gray-400" style={{ width: COL_WIDTHS_PROC.fornecedor }}>{fornecedor || '—'}</td>
+                      <td className="py-3 px-4 text-right font-bold" style={{ width: COL_WIDTHS_PROC.valor }}>{valor > 0 ? valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
+                      <td className="py-3 px-4 text-center" style={{ width: COL_WIDTHS_PROC.status }}>
                         {ok ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full border bg-green-500/20 text-green-700 border-green-400 dark:bg-green-500/10 dark:text-green-400 dark:border-green-500/20">
-                            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                            Processada
-                          </span>
+                          clienteDoRow?.folder_processadas ? (
+                            <button
+                              onClick={() => abrirArquivoProcessamento(row, clienteDoRow)}
+                              className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full border bg-green-500/20 text-green-700 border-green-400 dark:bg-green-500/10 dark:text-green-400 dark:border-green-500/20 hover:bg-green-500 hover:text-white dark:hover:bg-green-500 dark:hover:text-white hover:border-green-500 transition-all duration-200 cursor-pointer"
+                              title="Abrir arquivo no Drive"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                              Processada
+                              <ExternalLink size={10} className="opacity-70" />
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full border bg-green-500/20 text-green-700 border-green-400 dark:bg-green-500/10 dark:text-green-400 dark:border-green-500/20">
+                              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                              Processada
+                            </span>
+                          )
                         ) : clienteDoRow?.folder_erro ? (
                           <a
                             href={`https://drive.google.com/drive/folders/${clienteDoRow.folder_erro}`}
@@ -1233,15 +1367,27 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-left text-xs text-gray-500 dark:text-gray-400 max-w-[280px] truncate" title={ok ? catsResumo : descErro}>
-                        {ok ? catsResumo : (descErro || '—')}
+                      <td className="py-3 px-4 text-left text-xs text-gray-500 dark:text-gray-400" style={{ width: COL_WIDTHS_PROC.observacao }}>
+                        {(() => {
+                          const texto = ok ? catsResumo : (descErro || '—');
+                          if (texto === '—') return '—';
+                          return (
+                            <button
+                              onClick={() => setObsModalTexto(texto)}
+                              className="text-left w-full truncate hover:text-orange-500 dark:hover:text-cyan-400 transition-colors"
+                              title="Clique para ver completo"
+                            >
+                              {texto}
+                            </button>
+                          );
+                        })()}
                       </td>
-                      <td className="py-3 px-4 text-center">
+                      <td className="py-3 px-4 text-center" style={{ width: COL_WIDTHS_PROC.acoes }}>
                         <div className="flex justify-center items-center gap-2">
                           <button
                             onClick={() => {
                               setProcEditando(row);
-                              setFormProcEdit({ fornecedor: fornecedor || '', valor_total: valorStr || '', status: status || 'processada', descricao_erro: descErro || '' });
+                              setFormProcEdit({ fornecedor: fornecedor || '', valor_total: valorStr || '', status: status || 'processada', descricao_erro: descErro || '', categorias: catsJson || '' });
                               setModal('editar_proc');
                             }}
                             className="p-2 rounded-lg bg-cyan-500/15 text-cyan-600 hover:bg-cyan-600 hover:text-white transition-all duration-200 shadow-sm border border-cyan-200 dark:bg-cyan-500/10 dark:text-cyan-600 dark:hover:bg-cyan-300 dark:border-cyan-500/20"
@@ -1585,6 +1731,38 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
                   className="input-style"
                 />
               </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5">Categorias</label>
+                {(() => {
+                  try {
+                    const parsed = JSON.parse(formProcEdit.categorias || '{}');
+                    const entries = Object.entries(parsed);
+                    if (entries.length > 0) {
+                      return (
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {entries.map(([c, v]) => (
+                            <span key={c} className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-700 border border-orange-300 dark:bg-cyan-500/10 dark:text-cyan-400 dark:border-cyan-500/20">
+                              {c}: R${parseFloat(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    }
+                  } catch (_) {}
+                  return null;
+                })()}
+                <textarea
+                  rows={3}
+                  value={formProcEdit.categorias}
+                  onChange={e => setFormProcEdit({ ...formProcEdit, categorias: e.target.value })}
+                  placeholder='{"Mercearia": "150.00", "Bebidas": "30.00"}'
+                  className="input-style font-mono text-xs resize-none"
+                />
+                {(() => {
+                  try { JSON.parse(formProcEdit.categorias || '{}'); return null; }
+                  catch (_) { return <p className="mt-1 text-xs text-red-500">JSON inválido</p>; }
+                })()}
+              </div>
             </div>
             <button type="submit" disabled={processando === 'editar_proc'}
               className="mt-1 w-full bg-orange-500 hover:bg-orange-600 dark:bg-cyan-600 dark:hover:bg-cyan-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2">
@@ -1640,6 +1818,44 @@ export default function Dashboard({ authUser, userData, orgData, refreshOrgData,
           </div>
         )}
       </BaseModal>
+
+      {/* ── Modal: Observação Completa ────────────────────────────────────────── */}
+      {obsModalTexto && (
+        <BaseModal
+          isOpen={!!obsModalTexto}
+          onClose={() => setObsModalTexto(null)}
+          title="Observações"
+        >
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-2">
+              {(() => {
+                try {
+                  const cats = {};
+                  obsModalTexto.split(' · ').forEach(part => {
+                    const idx = part.lastIndexOf(':');
+                    if (idx > 0) {
+                      cats[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+                    }
+                  });
+                  return Object.entries(cats).map(([c, v]) => (
+                    <span key={c} className="inline-flex items-center gap-1 text-sm font-semibold px-3 py-1.5 rounded-full bg-orange-500/10 text-orange-700 border border-orange-300 dark:bg-cyan-500/10 dark:text-cyan-400 dark:border-cyan-500/20">
+                      {c}: {v}
+                    </span>
+                  ));
+                } catch (_) {
+                  return <p className="text-sm text-gray-700 dark:text-gray-300">{obsModalTexto}</p>;
+                }
+              })()}
+            </div>
+            <button
+              onClick={() => setObsModalTexto(null)}
+              className="mt-2 w-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 font-bold py-2.5 rounded-xl transition-all cursor-pointer"
+            >
+              Fechar
+            </button>
+          </div>
+        </BaseModal>
+      )}
 
       {/* ── Modal: Confirmar Exclusão ──────────────────────────────────────────── */}
       <BaseModal
